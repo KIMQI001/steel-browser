@@ -9,12 +9,14 @@ const envSchema = z.object({
   PORT: z.string().optional().default("3000"),
   CDP_REDIRECT_PORT: z.string().optional().default("9222"),
   PROXY_URL: z.string().optional(),
+  CAPTCHA_API_KEY: z.string().optional(),
+  ENABLE_CAPTCHA_SOLVER: z.string().optional().default("false").transform(val => val === "true"),
   DEFAULT_HEADERS: z
     .string()
     .optional()
     .transform((val) => (val ? JSON.parse(val) : {}))
     .pipe(z.record(z.string()).optional().default({})),
-  KILL_TIMEOUT: z.string().optional().default("25"), // to fit in default 30 seconds of Heroku or ECS with some margin
+  KILL_TIMEOUT: z.string().optional().default("25"),
 });
 
 export const env = envSchema.parse(process.env);

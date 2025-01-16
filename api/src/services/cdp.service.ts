@@ -12,6 +12,7 @@ import { FingerprintInjector } from "fingerprint-injector";
 import { BrowserFingerprintWithHeaders, FingerprintGenerator } from "fingerprint-generator";
 import { FastifyBaseLogger } from "fastify";
 import { isAdRequest } from "../utils/ads";
+import { CaptchaService } from "./captcha.service";
 
 export class CDPService extends EventEmitter {
   private logger: FastifyBaseLogger;
@@ -29,6 +30,7 @@ export class CDPService extends EventEmitter {
   private defaultLaunchConfig: BrowserLauncherOptions;
   private currentSessionConfig: BrowserLauncherOptions | null;
   private shuttingDown: boolean;
+  private captchaService?: CaptchaService;
 
   constructor(config: { keepAlive?: boolean }, logger: FastifyBaseLogger) {
     super();
@@ -49,6 +51,9 @@ export class CDPService extends EventEmitter {
     this.defaultLaunchConfig = {
       options: { headless: true },
     };
+    if (env.ENABLE_CAPTCHA_SOLVER && env.CAPTCHA_API_KEY) {
+      this.captchaService = new CaptchaService(logger);
+    }
   }
 
   private removeAllHandlers() {
@@ -289,6 +294,39 @@ export class CDPService extends EventEmitter {
     }
   }
 
+  private async setupCaptchaSolver(page: Page) {
+    if (!this.captchaService) return;
+
+    await page.setRequestInterception(true);
+    
+    page.on('request', async (request) => {
+      const url = request.url();
+      if (url.includes('google.com/recaptcha') || url.includes('hcaptcha.com')) {
+        try {
+          const html = await page.content();
+          // 检测 reCAPTCHA
+          const recaptchaMatch = html.match(/sitekey="([^"]+)"/);
+          if (recaptchaMatch && this.captchaService) {
+            const siteKey = recaptchaMatch[1];
+            const token = await this.captchaService.solveRecaptchaV2(siteKey, url);
+            await page.evaluate(`window.grecaptcha.getResponse = () => '${token}';`);
+          }
+          
+          // 检测 hCaptcha
+          const hcaptchaMatch = html.match(/data-sitekey="([^"]+)"/);
+          if (hcaptchaMatch && this.captchaService) {
+            const siteKey = hcaptchaMatch[1];
+            const token = await this.captchaService.solveHCaptcha(siteKey, url);
+            await page.evaluate(`window.hcaptcha.getResponse = () => '${token}';`);
+          }
+        } catch (error) {
+          this.logger.error('Failed to solve captcha:', error);
+        }
+      }
+      request.continue();
+    });
+  }
+
   public async createPage(): Promise<Page> {
     if (!this.browserInstance) {
       throw new Error("Browser instance not initialized");
@@ -497,13 +535,23 @@ export class CDPService extends EventEmitter {
     return this.browserInstance?.pages() || [];
   }
 
-  public async startNewSession(sessionConfig: BrowserLauncherOptions): Promise<Browser> {
+  public async startNewSession(config: BrowserLauncherOptions): Promise<Browser> {
     if (this.browserInstance) {
       this.logger.info("Closing existing browser before starting a new session.");
       await this.shutdown();
     }
-    this.currentSessionConfig = sessionConfig;
-    return this.launch(sessionConfig);
+    this.currentSessionConfig = config;
+    const browser = await this.launch(config);
+    if (!this.browserInstance) {
+      throw new Error("Failed to launch browser instance");
+    }
+    const page = await this.browserInstance.newPage();
+    this.primaryPage = page;
+    
+    if (env.ENABLE_CAPTCHA_SOLVER && this.captchaService) {
+      await this.setupCaptchaSolver(page);
+    }
+    return browser;
   }
 
   public async endSession(): Promise<void> {

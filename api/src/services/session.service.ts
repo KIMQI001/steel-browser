@@ -1,6 +1,7 @@
 import { FastifyBaseLogger } from "fastify";
 import { CDPService } from "./cdp.service";
 import { SeleniumService } from "./selenium.service";
+import { CaptchaService } from "./captcha.service";
 import { SessionDetails } from "../modules/sessions/sessions.schema";
 import { v4 as uuidv4 } from "uuid";
 import { env } from "../env";
@@ -28,12 +29,16 @@ export class SessionService {
   private logger: FastifyBaseLogger;
   private cdpService: CDPService;
   private seleniumService: SeleniumService;
+  private captchaService?: CaptchaService;
   public activeSession: SessionDetails;
 
   constructor(config: { cdpService: CDPService, seleniumService: SeleniumService, logger: FastifyBaseLogger }) {
     this.cdpService = config.cdpService;
     this.seleniumService = config.seleniumService;
     this.logger = config.logger;
+    if (env.ENABLE_CAPTCHA_SOLVER && env.CAPTCHA_API_KEY) {
+      this.captchaService = new CaptchaService(this.logger);
+    }
     this.activeSession = {
       id: uuidv4(),
       createdAt: new Date().toISOString(),
@@ -55,6 +60,7 @@ export class SessionService {
     extensions?: string[];
     timezone?: string;
     dimensions?: { width: number; height: number };
+    solveCaptcha?: boolean;
   }): Promise<SessionDetails> {
     const {
       sessionId,
@@ -67,7 +73,10 @@ export class SessionService {
       dimensions,
       isSelenium,
       blockAds,
+      solveCaptcha,
     } = options;
+
+    const canSolveCaptcha = !!(solveCaptcha && env.ENABLE_CAPTCHA_SOLVER && this.captchaService);
 
     const browserLauncherOptions: BrowserLauncherOptions = {
       options: {
@@ -98,7 +107,7 @@ export class SessionService {
           sessionContext?.userAgent ||
           "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
         proxy: proxyUrl,
-        solveCaptcha: false,
+        solveCaptcha: canSolveCaptcha,
         isSelenium,
       });
     } else {
@@ -111,7 +120,7 @@ export class SessionService {
         sessionViewerUrl: `http://${env.DOMAIN ?? env.HOST}:${env.PORT}`,
         userAgent: this.cdpService.getUserAgent(),
         proxy: proxyUrl,
-        solveCaptcha: false,
+        solveCaptcha: canSolveCaptcha,
         isSelenium,
       });
     }
